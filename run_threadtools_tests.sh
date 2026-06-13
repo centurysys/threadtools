@@ -10,7 +10,8 @@ tests/test_pool_item_move_return.nim \
 tests/test_pool_item_thread_pingpong.nim \
 tests/test_async_bridge_close.nim \
 tests/test_async_event_bridge.nim \
-tests/test_async_polling_bridge.nim\
+tests/test_async_polling_bridge.nim \
+tests/test_async_worker_thread_bridge.nim\
 "
 
 COMPILE_FAIL_TESTS="\
