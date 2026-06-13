@@ -73,6 +73,39 @@ var received = q.receive()
 
 After `sendMove(frame)`, `frame` must not be used again.
 
+
+### Pool, Pooled, and PooledQueue
+
+For reusable buffers, prefer the higher-level pooled API:
+
+```nim
+var pool = assertOk(newPool[Buf](8), "pool failed")
+var toWorker = assertOk(newPooledQueue[Buf](8), "queue failed")
+
+for i in 0 ..< 8:
+  discard pool.addMove(newBuf())
+
+var item = pool.acquire()
+fill(item.value)
+
+discard toWorker.sendMove(item)
+```
+
+The roles are intentionally named differently:
+
+```text
+Pool[Buf]
+  free/reusable buffers
+
+Pooled[Buf]
+  active ownership token for one buffer
+
+PooledQueue[Buf]
+  communication path for active Pooled[Buf] values
+```
+
+`Pooled[T]` is implemented by `PoolItem[T]`, but most user code should start with `Pool[T]` and `PooledQueue[T]` instead of writing `ThreadQueue[PoolItem[T]]` directly.
+
 ### PoolItem
 
 `PoolItem[T]` is a move-only ownership token for pooled values.
