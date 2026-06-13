@@ -210,6 +210,217 @@ This handle does not own the queue. The original `ThreadQueue[T]` must outlive a
 
 Use this when a value needs to carry a return queue without embedding a `ref object` in the moved payload.
 
+
+## Pool, Pooled, and PooledQueue
+
+These are user-facing wrappers for the lower-level pool item pattern.
+
+They separate the two roles that otherwise look too similar:
+
+```text
+Pool[T]
+  free reusable T values
+
+PooledQueue[T]
+  communication path for active Pooled[T] ownership tokens
+```
+
+Internally, the mapping is:
+
+```text
+Pool[T]        = wrapper around ThreadQueue[T]
+Pooled[T]      = alias for PoolItem[T]
+PooledQueue[T] = wrapper around ThreadQueue[PoolItem[T]]
+```
+
+Use this API first when building buffer pools or frame pipelines.
+
+### Pool
+
+```nim
+Pool[T]
+```
+
+A named pool of reusable `T` values.
+
+### newPool
+
+```nim
+newPool[T](capacity: int): Result[Pool[T], ErrorCode]
+```
+
+Creates an empty pool.
+
+Example:
+
+```nim
+var pool = ?newPool[Buf](8)
+```
+
+The pool starts empty.  Fill it with `addMove()`:
+
+```nim
+for i in 0 ..< 8:
+  discard pool.addMove(newBuf())
+```
+
+### addMove
+
+```nim
+addMove[T](pool: Pool[T]; valueExpr: untyped): Result[bool, ErrorCode]
+```
+
+Adds a value to the pool by consuming the source value.
+
+After `addMove(value)`, the source value must not be used again.
+
+### acquire
+
+```nim
+acquire[T](pool: Pool[T]): Pooled[T]
+```
+
+Blocking acquire.
+
+The returned `Pooled[T]` remembers the pool as its return path.
+
+Example:
+
+```nim
+var item = pool.acquire()
+item.value.fill(...)
+discard item.release()
+```
+
+### tryAcquire
+
+```nim
+tryAcquire[T](pool: Pool[T]; item: var Pooled[T]): Result[bool, ErrorCode]
+```
+
+Non-blocking acquire.
+
+Returns `Ok(true)` when an item was acquired, `Ok(false)` when the pool is empty.
+
+The destination item must be inactive.  This prevents accidental overwrite of an active `Pooled[T]`.
+
+### Pooled
+
+```nim
+Pooled[T]
+```
+
+User-facing alias for `PoolItem[T]`.
+
+A `Pooled[T]` is a move-only ownership token.  It cannot be copied.
+
+When released, or when destroyed while still active, it returns the owned `T` to its pool.
+
+### value
+
+```nim
+value[T](item: var Pooled[T]): var T
+payload[T](item: var Pooled[T]): var T
+```
+
+User-facing aliases for accessing the owned value.
+
+Example:
+
+```nim
+var item = pool.acquire()
+item.value.index = 10
+```
+
+### PooledQueue
+
+```nim
+PooledQueue[T]
+```
+
+A queue for moving active `Pooled[T]` values between threads.
+
+This is not the pool.  It is a communication path.
+
+### newPooledQueue
+
+```nim
+newPooledQueue[T](capacity: int): Result[PooledQueue[T], ErrorCode]
+```
+
+Creates a bounded queue for `Pooled[T]` values.
+
+Example:
+
+```nim
+var toWorker = ?newPooledQueue[Buf](8)
+var fromWorker = ?newPooledQueue[Buf](8)
+```
+
+### PooledQueue.sendMove
+
+```nim
+sendMove[T](queue: PooledQueue[T]; itemExpr: untyped): Result[bool, ErrorCode]
+```
+
+Moves a `Pooled[T]` ownership token into the queue.
+
+After this call succeeds, the source item must not be used again.
+
+### PooledQueue.receive
+
+```nim
+receive[T](queue: PooledQueue[T]): Pooled[T]
+```
+
+Blocking receive.
+
+### PooledQueue.tryReceive
+
+```nim
+tryReceive[T](queue: PooledQueue[T]; item: var Pooled[T]): Result[bool, ErrorCode]
+```
+
+Non-blocking receive.
+
+The destination item must be inactive.
+
+### Typical pooled flow
+
+```text
+Pool[Buf]
+  -> acquire()
+  -> Pooled[Buf]
+  -> PooledQueue[Buf].sendMove()
+  -> worker receive()
+  -> process item.value
+  -> item.release()
+  -> returns to Pool[Buf]
+```
+
+Example:
+
+```nim
+var pool = ?newPool[Buf](8)
+var toWorker = ?newPooledQueue[Buf](8)
+
+for i in 0 ..< 8:
+  discard pool.addMove(newBuf())
+
+var item = pool.acquire()
+fill(item.value)
+
+discard toWorker.sendMove(item)
+```
+
+Worker side:
+
+```nim
+var item = toWorker.receive()
+process(item.value)
+discard item.release()
+```
+
 ## PoolItem
 
 ### Type

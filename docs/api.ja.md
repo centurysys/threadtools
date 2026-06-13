@@ -210,6 +210,217 @@ handle(queue: ThreadQueue[T]): ThreadQueueHandle[T]
 
 value object の中に `ref object` を持ち込まず、return queue を指すために使います。
 
+
+## Pool, Pooled, PooledQueue
+
+これは、低レイヤの `PoolItem` pattern を使いやすくするための上位 wrapper API です。
+
+見た目が似ている2つの役割を名前で分けます。
+
+```text
+Pool[T]
+  未使用の再利用可能な T を入れておく場所
+
+PooledQueue[T]
+  使用中の Pooled[T] ownership token を運ぶ通信経路
+```
+
+内部的な対応は次です。
+
+```text
+Pool[T]        = ThreadQueue[T] の wrapper
+Pooled[T]      = PoolItem[T] の alias
+PooledQueue[T] = ThreadQueue[PoolItem[T]] の wrapper
+```
+
+buffer pool や frame pipeline を作る場合は、まずこの API を使うのが分かりやすいです。
+
+### Pool
+
+```nim
+Pool[T]
+```
+
+再利用可能な `T` を保持する pool です。
+
+### newPool
+
+```nim
+newPool[T](capacity: int): Result[Pool[T], ErrorCode]
+```
+
+空の pool を作ります。
+
+例:
+
+```nim
+var pool = ?newPool[Buf](8)
+```
+
+作成直後の pool は空です。`addMove()` で値を入れます。
+
+```nim
+for i in 0 ..< 8:
+  discard pool.addMove(newBuf())
+```
+
+### addMove
+
+```nim
+addMove[T](pool: Pool[T]; valueExpr: untyped): Result[bool, ErrorCode]
+```
+
+source value を consume して pool へ追加します。
+
+`addMove(value)` 後に元の `value` を使ってはいけません。
+
+### acquire
+
+```nim
+acquire[T](pool: Pool[T]): Pooled[T]
+```
+
+blocking acquire です。
+
+戻り値の `Pooled[T]` は、返却先としてこの pool を覚えています。
+
+例:
+
+```nim
+var item = pool.acquire()
+item.value.fill(...)
+discard item.release()
+```
+
+### tryAcquire
+
+```nim
+tryAcquire[T](pool: Pool[T]; item: var Pooled[T]): Result[bool, ErrorCode]
+```
+
+non-blocking acquire です。
+
+item を取得できたら `Ok(true)`、pool が空なら `Ok(false)` を返します。
+
+destination item は inactive である必要があります。active な `Pooled[T]` を誤って上書きしないためです。
+
+### Pooled
+
+```nim
+Pooled[T]
+```
+
+`PoolItem[T]` の user-facing alias です。
+
+`Pooled[T]` は move-only ownership token です。copy できません。
+
+`release()` されたとき、または active なまま破棄されたとき、所有している `T` を pool に戻します。
+
+### value
+
+```nim
+value[T](item: var Pooled[T]): var T
+payload[T](item: var Pooled[T]): var T
+```
+
+所有している値に access するための user-facing alias です。
+
+例:
+
+```nim
+var item = pool.acquire()
+item.value.index = 10
+```
+
+### PooledQueue
+
+```nim
+PooledQueue[T]
+```
+
+active な `Pooled[T]` を thread 間で移動するための queue です。
+
+これは pool そのものではなく、通信経路です。
+
+### newPooledQueue
+
+```nim
+newPooledQueue[T](capacity: int): Result[PooledQueue[T], ErrorCode]
+```
+
+`Pooled[T]` 用の bounded queue を作ります。
+
+例:
+
+```nim
+var toWorker = ?newPooledQueue[Buf](8)
+var fromWorker = ?newPooledQueue[Buf](8)
+```
+
+### PooledQueue.sendMove
+
+```nim
+sendMove[T](queue: PooledQueue[T]; itemExpr: untyped): Result[bool, ErrorCode]
+```
+
+`Pooled[T]` ownership token を queue へ move します。
+
+成功後、source item を使ってはいけません。
+
+### PooledQueue.receive
+
+```nim
+receive[T](queue: PooledQueue[T]): Pooled[T]
+```
+
+blocking receive です。
+
+### PooledQueue.tryReceive
+
+```nim
+tryReceive[T](queue: PooledQueue[T]; item: var Pooled[T]): Result[bool, ErrorCode]
+```
+
+non-blocking receive です。
+
+destination item は inactive である必要があります。
+
+### 典型的な pooled flow
+
+```text
+Pool[Buf]
+  -> acquire()
+  -> Pooled[Buf]
+  -> PooledQueue[Buf].sendMove()
+  -> worker receive()
+  -> item.value を処理
+  -> item.release()
+  -> Pool[Buf] に戻る
+```
+
+例:
+
+```nim
+var pool = ?newPool[Buf](8)
+var toWorker = ?newPooledQueue[Buf](8)
+
+for i in 0 ..< 8:
+  discard pool.addMove(newBuf())
+
+var item = pool.acquire()
+fill(item.value)
+
+discard toWorker.sendMove(item)
+```
+
+worker 側:
+
+```nim
+var item = toWorker.receive()
+process(item.value)
+discard item.release()
+```
+
 ## PoolItem
 
 ### 型

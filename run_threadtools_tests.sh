@@ -8,6 +8,8 @@ RUNTIME_TESTS="\
 tests/test_thread_queue_move_transfer.nim \
 tests/test_pool_item_move_return.nim \
 tests/test_pool_item_thread_pingpong.nim \
+tests/test_pooled_api.nim \
+tests/test_pooled_queue_thread_transfer.nim \
 tests/test_async_bridge_backpressure \
 tests/test_async_bridge_close.nim \
 tests/test_async_bridge_pending_fifo.nim \
@@ -20,7 +22,9 @@ COMPILE_FAIL_TESTS="\
 tests/compile_fail/send_move_reuse_after_send.nim \
 tests/compile_fail/new_pool_item_reuse_after_ctor.nim \
 tests/compile_fail/pool_item_copy.nim \
-tests/compile_fail/send_copy_pool_item.nim\
+tests/compile_fail/send_copy_pool_item.nim \
+tests/compile_fail/pooled_copy.nim \
+tests/compile_fail/send_move_reuse_pooled.nim\
 "
 
 echo "NIM       : $NIM"

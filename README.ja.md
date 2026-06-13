@@ -74,6 +74,39 @@ var received = q.receive()
 
 `sendMove(frame)` 後に `frame` を使ってはいけません。
 
+
+### Pool, Pooled, PooledQueue
+
+再利用 buffer を扱う場合は、低レイヤの `PoolItem` を直接組み立てるより、上位の pooled API を使うのが分かりやすいです。
+
+```nim
+var pool = assertOk(newPool[Buf](8), "pool failed")
+var toWorker = assertOk(newPooledQueue[Buf](8), "queue failed")
+
+for i in 0 ..< 8:
+  discard pool.addMove(newBuf())
+
+var item = pool.acquire()
+fill(item.value)
+
+discard toWorker.sendMove(item)
+```
+
+役割は名前で分けています。
+
+```text
+Pool[Buf]
+  未使用 / 再利用可能な buffer
+
+Pooled[Buf]
+  ひとつの buffer を所有している active な token
+
+PooledQueue[Buf]
+  active な Pooled[Buf] を運ぶ通信経路
+```
+
+`Pooled[T]` の実体は `PoolItem[T]` ですが、通常の利用では `ThreadQueue[PoolItem[T]]` を直接書くより、`Pool[T]` と `PooledQueue[T]` から始める方が混乱しにくくなります。
+
 ### PoolItem
 
 `PoolItem[T]` は、pool 管理された値を所有する move-only token です。
