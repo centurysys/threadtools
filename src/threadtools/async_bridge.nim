@@ -42,10 +42,26 @@ type
     ## handle and the thread-safe AsyncEvent value.
     ##
     ## AsyncEvent is a distinct value type, not a nil-able ref.  `valid` is used
-    ## to represent an absent/closed notifier.
+    ## to represent an absent notifier.  `closedPtr` points to the owning
+    ## bridge's closed flag so stale notifier handles can reject notify() after
+    ## close().
+    ##
+    ## Closing while sender threads are still active is still a shutdown-order
+    ## bug. Stop senders first, then close the bridge.
     queue: ThreadQueueHandle[T]
     event: AsyncEvent
     valid: bool
+    closedPtr: ptr bool
+
+
+# ------------------------------------------------------------------------------
+# Small Result helpers:
+# ------------------------------------------------------------------------------
+proc okBoolResult(): Result[bool, ErrorCode] =
+  return ok(true)
+
+proc errBoolResult(code: ErrorCode): Result[bool, ErrorCode] =
+  return err(code)
 
 proc newAsyncOwned[T](value: sink T): AsyncOwned[T] =
   new result
@@ -212,16 +228,44 @@ proc notifier*[T](self: AsyncThreadQueueBridge[T]): AsyncThreadQueueNotifier[T] 
   ## Returns a small sender-side notifier handle.
   ##
   ## The returned handle is valid only while this bridge and its source
-  ## ThreadQueue[T] are alive.
+  ## ThreadQueue[T] are alive.  Existing notifier values observe bridge.close()
+  ## through a raw closed flag pointer and reject notify()/sendMove() after close.
   if self.isNil or self.closed or not self.eventActive:
-    return AsyncThreadQueueNotifier[T](queue: nil, valid: false)
+    return AsyncThreadQueueNotifier[T](queue: nil, valid: false, closedPtr: nil)
 
-  return AsyncThreadQueueNotifier[T](queue: self.queue.handle, event: self.event, valid: true)
+  return AsyncThreadQueueNotifier[T](
+    queue: self.queue.handle,
+    event: self.event,
+    valid: true,
+    closedPtr: addr self.closed,
+  )
+
+proc isValid*[T](self: AsyncThreadQueueNotifier[T]): bool {.inline.} =
+  ## Returns true while this notifier can wake the bridge.
+  ##
+  ## This is intended for shutdown checks.  It does not make concurrent close vs
+  ## send a supported operation; sender threads should be stopped before close().
+  if not self.valid or self.queue == nil:
+    return false
+
+  if self.closedPtr != nil and self.closedPtr[]:
+    return false
+
+  if self.queue.isClosed:
+    return false
+
+  return true
 
 proc notify*[T](self: AsyncThreadQueueNotifier[T]): Result[bool, ErrorCode] =
   ## Wakes the asyncdispatch thread after a value has been sent to the queue.
   if not self.valid or self.queue == nil:
     return err(ErrorCode.InvalidState)
+
+  if self.closedPtr != nil and self.closedPtr[]:
+    return err(ErrorCode.Closed)
+
+  if self.queue.isClosed:
+    return err(ErrorCode.Closed)
 
   try:
     trigger(self.event)
@@ -238,11 +282,21 @@ template sendMove*[T](self: AsyncThreadQueueNotifier[T]; valueExpr: untyped): Re
   ## successful queue send.
   block:
     let n = self
-    var ret = n.queue.sendMove(valueExpr)
-    if ret.isErr:
-      ret
+
+    var ret: Result[bool, ErrorCode]
+
+    if not n.valid or n.queue == nil:
+      ret = errBoolResult(ErrorCode.InvalidState)
+    elif n.closedPtr != nil and n.closedPtr[]:
+      ret = errBoolResult(ErrorCode.Closed)
+    elif n.queue.isClosed:
+      ret = errBoolResult(ErrorCode.Closed)
     else:
-      n.notify()
+      ret = n.queue.sendMove(valueExpr)
+      if ret.isOk:
+        ret = n.notify()
+
+    ret
 
 proc recvAsyncOwned*[T](self: AsyncThreadQueueBridge[T]): Future[AsyncOwned[T]] =
   ## Receives one value through the AsyncEvent bridge.
@@ -267,20 +321,32 @@ proc recvAsyncOwned*[T](self: AsyncThreadQueueBridge[T]): Future[AsyncOwned[T]] 
 proc recvAsync*[T](self: AsyncThreadQueueBridge[T]): Future[AsyncOwned[T]] {.inline.} =
   return recvAsyncOwned[T](self)
 
+proc cancelPending*[T](self: AsyncThreadQueueBridge[T]; message = "AsyncThreadQueueBridge: pending receive cancelled"): int =
+  ## Fails all currently pending recvAsync() futures without closing the bridge.
+  ##
+  ## This is useful for higher-level shutdown logic that wants to abort current
+  ## waits but continue using the bridge afterwards.
+  if self.isNil:
+    return 0
+
+  result = self.pending.len
+  self.failPending(message)
+
 proc close*[T](self: AsyncThreadQueueBridge[T]) =
   ## Closes the bridge and fails pending futures.
   ##
-  ## This does not close the underlying ThreadQueue[T].  It only unregisters and
-  ## closes the AsyncEvent owned by this bridge.
+  ## This does not close the underlying ThreadQueue[T].  It unregisters and
+  ## closes the AsyncEvent owned by this bridge, and any existing notifier handle
+  ## will observe the closed flag and reject notify()/sendMove().
   if self.isNil or self.closed:
     return
 
   self.closed = true
-  self.failPending("AsyncThreadQueueBridge: bridge is closed")
+  discard self.cancelPending("AsyncThreadQueueBridge: bridge is closed")
 
   if self.eventActive:
     try:
-      unregister(self.event)
+      asyncdispatch.unregister(self.event)
     except OSError:
       discard
 
@@ -290,3 +356,4 @@ proc close*[T](self: AsyncThreadQueueBridge[T]) =
       discard
 
     self.eventActive = false
+
