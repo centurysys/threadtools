@@ -8,6 +8,7 @@ RUNTIME_TESTS="\
 tests/test_thread_queue_move_transfer.nim \
 tests/test_pool_item_move_return.nim \
 tests/test_pool_item_thread_pingpong.nim \
+tests/test_async_bridge_backpressure \
 tests/test_async_bridge_close.nim \
 tests/test_async_bridge_pending_fifo.nim \
 tests/test_async_event_bridge.nim \
