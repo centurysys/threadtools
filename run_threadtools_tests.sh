@@ -2,12 +2,18 @@
 set -eu
 
 NIM=${NIM:-nim}
-NIM_FLAGS=${NIM_FLAGS:-"--threads:on --mm:orc --path:src"}
+NIM_FLAGS=${NIM_FLAGS:-"--threads:on --mm:orc --path:src --outdir:build/tests"}
 
 RUNTIME_TESTS="\
 tests/test_thread_queue_move_transfer.nim \
 tests/test_pool_item_move_return.nim \
-tests/test_pool_item_thread_pingpong.nim\
+tests/test_pool_item_thread_pingpong.nim \
+tests/test_async_bridge_backpressure \
+tests/test_async_bridge_close.nim \
+tests/test_async_bridge_pending_fifo.nim \
+tests/test_async_event_bridge.nim \
+tests/test_async_polling_bridge.nim \
+tests/test_async_worker_thread_bridge.nim\
 "
 
 COMPILE_FAIL_TESTS="\
@@ -25,7 +31,7 @@ for t in $RUNTIME_TESTS; do
   echo "== runtime: $t"
   $NIM c -r $NIM_FLAGS "$t"
   echo
- done
+done
 
 for t in $COMPILE_FAIL_TESTS; do
   echo "== compile-fail: $t"
@@ -40,6 +46,6 @@ for t in $COMPILE_FAIL_TESTS; do
   cat "$log"
   echo "compile-fail OK: $t"
   echo
- done
+done
 
 echo "ALL TESTS PASSED"

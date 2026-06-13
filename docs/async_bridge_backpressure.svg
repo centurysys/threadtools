@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="560" viewBox="0 0 1160 560">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#333"/>
+    </marker>
+    <style>
+      text { font-family: sans-serif; fill: #222; }
+      .title { font-size: 26px; font-weight: 700; }
+      .label { font-size: 17px; font-weight: 700; }
+      .small { font-size: 14px; }
+      .tiny { font-size: 12px; }
+      .box { fill: #f7f7f7; stroke: #333; stroke-width: 1.5; rx: 10; }
+      .slot { fill: #ffffff; stroke: #333; stroke-width: 1.2; rx: 8; }
+      .slotFull { fill: #e8f2ff; stroke: #333; stroke-width: 1.2; rx: 8; }
+      .slotFree { fill: #f5fff0; stroke: #333; stroke-width: 1.2; rx: 8; }
+      .warn { fill: #fff2e5; stroke: #b45b00; stroke-width: 1.5; rx: 8; }
+      .ok { fill: #eefbea; stroke: #3b7a2a; stroke-width: 1.5; rx: 8; }
+      .line { stroke: #333; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #777; stroke-width: 2; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <text x="40" y="42" class="title">Async bridge backpressure flow</text>
+  <text x="40" y="70" class="small">Bounded ThreadQueue capacity = 4. Sender blocks when full; dispatcher drain creates space and sender resumes.</text>
+
+  <rect x="40" y="110" width="1080" height="94" class="box"/>
+  <text x="60" y="140" class="label">1. Worker fills the bounded queue</text>
+  <text x="60" y="168" class="small">sendMove(msg0..msg3) succeeds, each send triggers AsyncEvent.</text>
+  <rect x="560" y="128" width="70" height="45" class="slotFull"/><text x="582" y="156" class="small">msg0</text>
+  <rect x="640" y="128" width="70" height="45" class="slotFull"/><text x="662" y="156" class="small">msg1</text>
+  <rect x="720" y="128" width="70" height="45" class="slotFull"/><text x="742" y="156" class="small">msg2</text>
+  <rect x="800" y="128" width="70" height="45" class="slotFull"/><text x="822" y="156" class="small">msg3</text>
+  <path d="M300 151 H545" class="line"/>
+  <text x="320" y="138" class="tiny">worker sendMove</text>
+
+  <rect x="40" y="230" width="1080" height="94" class="box"/>
+  <text x="60" y="260" class="label">2. Queue is full, so worker blocks</text>
+  <text x="60" y="288" class="small">sendMove(msg4) cannot complete until at least one slot is freed.</text>
+  <rect x="330" y="248" width="160" height="48" class="warn"/><text x="352" y="278" class="small">blocked at msg4</text>
+  <path d="M500 272 H550" class="dash"/>
+  <rect x="560" y="248" width="70" height="45" class="slotFull"/><text x="582" y="276" class="small">msg0</text>
+  <rect x="640" y="248" width="70" height="45" class="slotFull"/><text x="662" y="276" class="small">msg1</text>
+  <rect x="720" y="248" width="70" height="45" class="slotFull"/><text x="742" y="276" class="small">msg2</text>
+  <rect x="800" y="248" width="70" height="45" class="slotFull"/><text x="822" y="276" class="small">msg3</text>
+
+  <rect x="40" y="350" width="1080" height="94" class="box"/>
+  <text x="60" y="380" class="label">3. Dispatcher receives and drains one item</text>
+  <text x="60" y="408" class="small">recvAsync() completes Future[AsyncOwned[T]], take() consumes msg0. One queue slot becomes free.</text>
+  <rect x="560" y="368" width="70" height="45" class="slotFree"/><text x="583" y="396" class="small">free</text>
+  <rect x="640" y="368" width="70" height="45" class="slotFull"/><text x="662" y="396" class="small">msg1</text>
+  <rect x="720" y="368" width="70" height="45" class="slotFull"/><text x="742" y="396" class="small">msg2</text>
+  <rect x="800" y="368" width="70" height="45" class="slotFull"/><text x="822" y="396" class="small">msg3</text>
+  <path d="M890 390 H1035" class="line"/>
+  <text x="910" y="377" class="tiny">dispatcher take()</text>
+
+  <rect x="40" y="470" width="1080" height="64" class="ok"/>
+  <text x="60" y="500" class="label">4. Worker resumes</text>
+  <text x="60" y="523" class="small">The freed slot lets sendMove(msg4) complete. The cycle repeats: drain one, sender advances one.</text>
+  <path d="M670 502 H825" class="line"/>
+  <text x="690" y="489" class="tiny">msg4 enters freed slot</text>
+</svg>
