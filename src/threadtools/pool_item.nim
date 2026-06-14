@@ -24,10 +24,17 @@ proc `=copy`*[T](dest: var PoolItem[T], src: PoolItem[T]) {.error: "PoolItem can
 # ------------------------------------------------------------------------------
 # Destructor:
 # ------------------------------------------------------------------------------
-proc `=destroy`*[T](self: var PoolItem[T]) =
+proc `=destroy`*[T](self: var PoolItem[T]) {.raises: [].} =
   if self.active:
     self.active = false
-    discard self.returnQueue.sendMove(move self.value)
+
+    # Destructor auto-return is best-effort.  A destructor must not leak queue /
+    # channel exceptions into callers, and Nim's std/isolation checks the
+    # destructor effect when PoolItem is moved through a ThreadQueue.
+    try:
+      discard self.returnQueue.sendMove(move self.value)
+    except Exception:
+      discard
 
 # ------------------------------------------------------------------------------
 # Constructor:
