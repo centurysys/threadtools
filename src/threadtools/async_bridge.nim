@@ -298,6 +298,38 @@ template sendMove*[T](self: AsyncThreadQueueNotifier[T]; valueExpr: untyped): Re
 
     ret
 
+proc trySendMove*[T](self: AsyncThreadQueueNotifier[T];
+    data: var T): Result[bool, ErrorCode] =
+  ## Attempts a non-blocking ownership transfer to the async bridge queue.
+  ##
+  ## Ok(true):  the value was enqueued and the bridge was notified.
+  ## Ok(false): the queue was full; the caller retains the unchanged value.
+  ## Err(InvalidState/Closed): no enqueue was attempted; caller retains data.
+  ##
+  ## The caller retains ownership on failure to enqueue. However, if the
+  ## enqueue succeeds and notify() subsequently returns Err(ChannelError),
+  ## the queued value has ALREADY moved and must not be retried. This is the
+  ## same notification-failure behavior as notifier.sendMove().
+  ##
+  ## As with sendMove(), producers must stop before closing the bridge or its
+  ## underlying queue. A concurrent close/send is not a supported operation.
+  if not self.valid or self.queue == nil:
+    return err(ErrorCode.InvalidState)
+
+  if self.closedPtr != nil and self.closedPtr[]:
+    return err(ErrorCode.Closed)
+
+  if self.queue.isClosed:
+    return err(ErrorCode.Closed)
+
+  let sent = self.queue.trySendMove(data)
+  if sent.isErr or not sent.get():
+    return sent
+
+  # A failed attempt must not wake pending consumers. Only an enqueued value
+  # requires notification, just as with the existing blocking sendMove().
+  return self.notify()
+
 proc recvAsyncOwned*[T](self: AsyncThreadQueueBridge[T]): Future[AsyncOwned[T]] =
   ## Receives one value through the AsyncEvent bridge.
   ##
