@@ -297,6 +297,63 @@ If a queue is full, sender threads block until receivers drain values.
 
 This is intentional and useful for controlling memory growth.
 
+## Non-blocking ownership transfer and shutdown
+
+When a producer must not wait for queue capacity (for example, an async event
+loop delivering telemetry to a synchronous database writer), use
+`trySendMove(var T)` instead of `sendMove()`:
+
+```nim
+var event = makeEvent()
+let sent = queue.trySendMove(event)
+if sent.isErr:
+  # InvalidState / Closed: event is still caller-owned.
+  discard
+elif not sent.get():
+  # Full: event is intact; decide whether to retry or report a dropped event.
+  discard
+else:
+  # Enqueued: event is no longer caller-owned.
+  discard
+```
+
+The same ownership contract applies to `Pool.tryAddMove()` and
+`PooledQueue.trySendMove()`. A `Pooled[T]` must remain active on a full-queue
+failure; dropping it may cause its destructor to return the buffer to its pool.
+`trySendMove` avoids a queue-*capacity* wait, but is not lock-free or a hard
+real-time operation.
+
+`AsyncThreadQueueNotifier.trySendMove()` notifies the async dispatcher only
+after a successful enqueue. **Important:** if notifying fails *after* enqueue,
+it can return `Err(ChannelError)` even though ownership has moved. Do not retry
+that item without independently checking whether it was delivered.
+
+### Orderly shutdown
+
+`ThreadQueue.close()` marks the queue closed; it does **not** unblock a thread
+already waiting in `receive()`, drain existing messages, or close the underlying
+channel. Closing concurrently with active senders/receivers is unsupported.
+For a dedicated writer thread:
+
+1. Stop accepting new events; stop and join all producer threads (or otherwise
+   ensure no producer can send another event).
+2. Enqueue a final `Stop` message **after** all preceding messages. If the
+   queue is full, retry with a bounded policy, without blocking an async event
+   loop. Reserve capacity or use an independent cancellation mechanism if the
+   writer might be permanently blocked.
+3. The writer processes pending messages in order, then commits, closes its
+   owned database connection, and exits when it reads `Stop`.
+4. Join the writer. Only then close and release queue resources. If an
+   `AsyncThreadQueueBridge` is present, close it on its dispatcher thread after
+   all notifier users have stopped; this fails any remaining pending futures.
+
+The sentinel approach assumes a known producer shutdown boundary; with multiple
+producers, joining or gating them before sending `Stop` is essential. A sender
+that failed to enqueue retains its event; the application must make an explicit
+retry/drop decision. A queue of audit events is **not** a substitute for a
+durable transaction journal: a crash can still lose uncommitted events.
+
+
 ## Tests
 
 The current test suite covers:

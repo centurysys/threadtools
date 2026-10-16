@@ -304,6 +304,57 @@ worker が再開する
 
 queue capacity は意図して決めてください。
 
+## 非ブロッキング ownership transfer と終了処理
+
+SQLite Writer など、下流が遅れても asyncdispatch を待たせたくない場合は
+`sendMove()` ではなく `trySendMove(var T)` を使います。
+
+```nim
+var event = makeEvent()
+let sent = queue.trySendMove(event)
+if sent.isErr:
+  # InvalidState / Closed: event は送信元が所有したまま
+  discard
+elif not sent.get():
+  # Full: event は変化せず送信元に残る。再試行・欠落を判断する
+  discard
+else:
+  # 送信成功: queue に所有権が移った
+  discard
+```
+
+`Pool.tryAddMove()`、`PooledQueue.trySendMove()` も同じ ownership 契約です。
+満杯で失敗した `Pooled[T]` を破棄すると、デストラクタが buffer を
+元の pool へ自動返却する可能性があるため、所有したまま再試行または
+明示的な返却方針を決めます。非ブロッキングなのは **空き容量待ち**
+についてであり、内部ロックを用いないことやリアルタイム性の保証ではありません。
+
+`AsyncThreadQueueNotifier.trySendMove()` は投入成功時だけ通知します。
+**注意:** 投入が成功した後に通知だけ失敗すると、所有権は移動済みでも
+`Err(ChannelError)` を返すことがあります。同じ値を安易に再送しないでください。
+
+### 安全な終了順序
+
+`ThreadQueue.close()` はフラグを閉じるだけです。待機中の `receive()`
+を解除せず、残メッセージを drain せず、下位channel自体もcloseしません。
+また、send/receive と並行して `close()` を呼ぶことはサポートされません。
+専用Writer threadの場合は次の順序にします。
+
+1. 新規イベント投入を停止し、producer を停止・joinする（または
+   以後送信しないことを保証する）。
+2. 先行メッセージの後に終了用 `Stop` を投入する。満杯時は上限付きで
+   再試行するなど、asyncdispatch をブロックしない方法を選ぶ。
+   Writer自体が停止する場合に備え、容量予約や別の停止経路も検討する。
+3. Writerは `Stop` より前のメッセージを処理し、DB commit/close後に終了する。
+4. Writer を `joinThread()` してから Queue をclose・破棄する。
+   AsyncBridge がある場合は notifier の送信者停止後、dispatcher thread上で
+   bridge.close() し、残るpending Futureを失敗完了させる。
+
+複数producerの場合、`Stop` より後に通常メッセージが投入されないことが必須です。
+また、Queueへの投入成功はSQLiteへの永続化完了を意味しません。電断時の
+証跡欠落を許容できない取引確定情報は、別途durableな仕組みが必要です。
+
+
 ## テスト
 
 現在のテスト群では次を確認しています。

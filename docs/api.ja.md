@@ -154,6 +154,20 @@ discard q.sendMove(makeFrame())
 discard q.sendMove(move frame)
 ```
 
+### trySendMove（非ブロッキング）
+
+```nim
+trySendMove[T](queue: ThreadQueue[T]; value: var T): Result[bool, ErrorCode]
+trySendMove[T](handle: ThreadQueueHandle[T]; value: var T): Result[bool, ErrorCode]
+```
+
+queueの空き容量を待たずに所有権移動を試みます。`Ok(true)` ならQueueへ移動、
+`Ok(false)` は満杯で元の値・所有権を保持します。
+`Err(InvalidState)` と `Err(Closed)` でも元の値は保持されます。
+送信元は `var T` の変数である必要があります。内部lock取得の可能性はあり、
+lock-free / real-time の保証ではありません。`close()` との並行実行は非対応です。
+
+
 ### receive
 
 ```nim
@@ -274,6 +288,17 @@ source value を consume して pool へ追加します。
 
 `addMove(value)` 後に元の `value` を使ってはいけません。
 
+### tryAddMove
+
+```nim
+tryAddMove[T](pool: Pool[T]; value: var T): Result[bool, ErrorCode]
+```
+
+`addMove()` の非ブロッキング版です。`Ok(false)`（free pool満杯）または
+`Err(InvalidState/Closed)` なら元の `value` を保持します。
+`Ok(true)` ならpoolへ所有権が移動します。
+
+
 ### acquire
 
 ```nim
@@ -366,6 +391,19 @@ sendMove[T](queue: PooledQueue[T]; itemExpr: untyped): Result[bool, ErrorCode]
 `Pooled[T]` ownership token を queue へ move します。
 
 成功後、source item を使ってはいけません。
+
+### PooledQueue.trySendMove
+
+```nim
+trySendMove[T](queue: PooledQueue[T]; item: var Pooled[T]): Result[bool, ErrorCode]
+```
+
+activeなpooled ownership tokenを空き容量待ちなしで投入します。満杯時は
+`Ok(false)` となり、tokenは **activeなまま** 呼び出し元が所有します。
+無効・閉鎖済みのQueue、inactiveなitemは所有権を移さず拒否します。
+失敗したactive tokenを破棄するとデストラクタで元のpoolへ返却され、
+この返却自体がブロックする可能性があります。
+
 
 ### PooledQueue.receive
 
@@ -712,6 +750,18 @@ proc worker(tx: AsyncThreadQueueNotifier[Frame]) {.thread.} =
 
 `sendMove` 後に `frame` を使ってはいけません。
 
+### trySendMove（notifier）
+
+```nim
+trySendMove[T](notifier: AsyncThreadQueueNotifier[T]; value: var T): Result[bool, ErrorCode]
+```
+
+`Ok(true)` は投入と通知の成功、`Ok(false)` は満杯による失敗（通知なし・所有権維持）です。
+投入前の `Err(Closed/InvalidState)` では値を保持します。ただし投入が成功した後で
+`notify()` だけが失敗すると、**所有権が移動した状態で** `Err(ChannelError)` を
+返すことがあります。自動的な再送はしないでください。
+
+
 ### notify
 
 ```nim
@@ -871,6 +921,29 @@ worker が再開する
 ```
 
 queue capacity は意図して決めてください。
+
+## 終了処理とライフサイクル
+
+`ThreadQueue.close()` は同期保護のない `closed` フラグを設定するだけです。
+下位channelをcloseせず、`receive()`で待機中のconsumerも起こしません。
+送受信と `close()` の並行実行は非対応です。また、`ThreadQueueHandle` は
+Queueの生存期間を延長しません。
+
+- producerへの新規投入を停止し、停止・join後に終了用sentinelを送信する。
+  複数producerでは、sentinelの後に通常メッセージが届かないことが必須です。
+- 同じQueueへ明示的な`Stop`を送り、空きがない場合は上限付きで再試行する。
+  consumerが恒久的に停止した場合に備え、別の異常停止経路も必要です。
+- consumerが残メッセージを処理、commitし、終了してからjoinする。
+  join完了後にQueueをcloseする。
+- Bridgeがある場合はnotifier送信者を停止した後、dispatcher thread上で
+  `bridge.close()`を実行する。pending Futureは失敗完了しますが、
+  source Queueは自動ではdrainされません。`cancelPending()`は待機解除が
+  意図された場合だけ使用します。
+
+証跡ログ用途では、queue満杯、writer障害、未commitイベントの欠落について
+アプリ側で明示的な方針が必要です。`trySendMove()`と`close()`だけでは
+永続化を保証できません。
+
 
 ## テスト済みの挙動
 

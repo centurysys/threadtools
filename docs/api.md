@@ -154,6 +154,21 @@ For explicit final-use forwarding:
 discard q.sendMove(move frame)
 ```
 
+### trySendMove (non-blocking)
+
+```nim
+trySendMove[T](queue: ThreadQueue[T]; value: var T): Result[bool, ErrorCode]
+trySendMove[T](handle: ThreadQueueHandle[T]; value: var T): Result[bool, ErrorCode]
+```
+
+Attempts to move `value` into the bounded queue without waiting for capacity.
+`Ok(true)` means ownership moved to the queue; `Ok(false)` means it was full
+and the value is still intact and caller-owned. `Err(InvalidState)` and
+`Err(Closed)` also preserve caller ownership. The source must be a mutable
+variable, not an rvalue. `trySendMove` can briefly take a channel lock and is
+not a lock-free/real-time guarantee. Do not call `close()` concurrently.
+
+
 ### receive
 
 ```nim
@@ -274,6 +289,17 @@ Adds a value to the pool by consuming the source value.
 
 After `addMove(value)`, the source value must not be used again.
 
+### tryAddMove
+
+```nim
+tryAddMove[T](pool: Pool[T]; value: var T): Result[bool, ErrorCode]
+```
+
+Non-blocking alternative to `addMove()`. On `Ok(false)` (free pool full) or
+`Err(InvalidState/Closed)`, `value` remains intact and caller-owned. On
+`Ok(true)` the pool owns the value.
+
+
 ### acquire
 
 ```nim
@@ -366,6 +392,20 @@ sendMove[T](queue: PooledQueue[T]; itemExpr: untyped): Result[bool, ErrorCode]
 Moves a `Pooled[T]` ownership token into the queue.
 
 After this call succeeds, the source item must not be used again.
+
+### PooledQueue.trySendMove
+
+```nim
+trySendMove[T](queue: PooledQueue[T]; item: var Pooled[T]): Result[bool, ErrorCode]
+```
+
+Sends an active pooled ownership token without waiting for capacity. A full
+queue returns `Ok(false)` with the token **still active** and caller-owned.
+Invalid, closed, or inactive items are rejected without consuming them. Do
+not drop an active token after a failed attempt unless returning its buffer to
+the originating pool is the intended behavior: its destructor may auto-return
+and that operation can itself block.
+
 
 ### PooledQueue.receive
 
@@ -714,6 +754,19 @@ proc worker(tx: AsyncThreadQueueNotifier[Frame]) {.thread.} =
 
 After `sendMove`, `frame` must not be used again.
 
+### trySendMove (notifier)
+
+```nim
+trySendMove[T](notifier: AsyncThreadQueueNotifier[T]; value: var T): Result[bool, ErrorCode]
+```
+
+`Ok(true)` means enqueued and the async event was triggered; `Ok(false)`
+means full, retaining ownership with **no notification**. `Err(Closed)` and
+`Err(InvalidState)` before enqueue preserve the value. However, if enqueue
+succeeds and `notify()` then fails, `Err(ChannelError)` may be returned **after
+ownership has moved**. Do not automatically retry in that case.
+
+
 ### notify
 
 ```nim
@@ -873,6 +926,30 @@ worker resumes
 ```
 
 Use queue capacity deliberately.
+
+## Orderly shutdown and lifecycle
+
+`ThreadQueue.close()` only sets an unsynchronized `closed` flag. It does **not**
+close the underlying channel or wake a consumer blocked in `receive()`.
+Concurrent `close()` versus queue send/receive is unsupported. Raw handles
+(`ThreadQueueHandle`) do not extend the lifetime of their owning queue.
+
+- Quiesce producers and join them before scheduling a final sentinel. With
+  multiple producers, no regular message may be sent after that sentinel.
+- Send an explicit `Stop` message through the same queue. Use a bounded retry
+  policy if sending from an event loop; a permanently stalled consumer can
+  make this step impossible, so plan a separate failure/abort path.
+- Let the consumer drain earlier messages, commit its owned resources, and
+  exit. Join the consumer before closing the queue.
+- If a bridge exists, stop all notifier users before closing it **on its
+  dispatcher thread**. `bridge.close()` fails pending futures; it does not
+  automatically drain its source queue. Call `cancelPending()` only when
+  intentional cancellation of pending receives is appropriate.
+
+For audit logging, application-level policy must define how queue-full events,
+writer failure, and uncommitted events are reported or durably retained. Neither
+`trySendMove()` nor `close()` makes messages durable.
+
 
 ## Tested behavior
 
