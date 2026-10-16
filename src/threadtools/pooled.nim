@@ -77,6 +77,18 @@ template add*[T](self: Pool[T]; valueExpr: untyped): Result[bool, ErrorCode] =
   ## Alias for addMove().
   addMove(self, valueExpr)
 
+proc tryAddMove*[T](self: Pool[T]; value: var T): Result[bool, ErrorCode] =
+  ## Adds `value` to the free pool without waiting for capacity.
+  ##
+  ## Ok(true): the pool takes ownership of `value`; do not use the source until
+  ##           it is reassigned.
+  ## Ok(false): the free pool is full; `value` remains intact and caller-owned.
+  ## Err(InvalidState/Closed): `value` remains intact and caller-owned.
+  ##
+  ## This differs from addMove(), which applies backpressure when the free
+  ## queue is full. In particular, no temporary Pooled[T] token is constructed.
+  return self.freeQ.trySendMove(value)
+
 proc acquire*[T](self: Pool[T]): Pooled[T] =
   ## Blocking acquire from the pool.
   ##
@@ -169,6 +181,24 @@ template sendMove*[T](self: PooledQueue[T]; itemExpr: untyped): Result[bool, Err
 template send*[T](self: PooledQueue[T]; itemExpr: untyped): Result[bool, ErrorCode] =
   ## Alias for sendMove().
   sendMove(self, itemExpr)
+
+proc trySendMove*[T](self: PooledQueue[T]; item: var Pooled[T]): Result[bool, ErrorCode] =
+  ## Transfers an active pooled item without waiting for queue capacity.
+  ##
+  ## Ok(true): ownership moves to the queue; do not reuse `item` until reset.
+  ## Ok(false): the queue is full; `item` remains active and caller-owned.
+  ## Err(InvalidState/Closed): `item` remains caller-owned.
+  ##
+  ## Do not construct a temporary Pooled[T] on failure: its destructor would
+  ## return the payload to the original pool, potentially blocking or making a
+  ## still-in-use buffer available to another thread.
+  if self.q.isNil:
+    return err(ErrorCode.InvalidState)
+
+  if not item.isActive:
+    return err(ErrorCode.InvalidState)
+
+  return self.q.trySendMove(item)
 
 proc receive*[T](self: PooledQueue[T]): Pooled[T] =
   ## Blocking receive from a PooledQueue.
