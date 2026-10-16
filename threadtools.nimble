@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "Takeyoshi Kikuchi"
 description   = "Thread worker utilities for Nim using channels, transfer queues, pooled items, and ownership-style message passing."
 license       = "MIT"
