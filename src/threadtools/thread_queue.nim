@@ -133,6 +133,53 @@ template sendMove*[T](self: ThreadQueueHandle[T], data: untyped): Result[bool, E
 
     ret
 
+# ------------------------------------------------------------------------------
+# Try send (preserve caller ownership if the channel is full):
+# ------------------------------------------------------------------------------
+proc trySendMove*[T](self: ThreadQueue[T], data: var T): Result[bool, ErrorCode] =
+  ## Attempts to transfer `data` into the queue without waiting for capacity.
+  ##
+  ## Ok(true): the queue now owns the value; do not use `data` until reassigned.
+  ## Ok(false): the channel was full; the caller still owns the intact value.
+  ## Err(InvalidState/Closed): the caller still owns the intact value.
+  ##
+  ## A `var T` is required so that failed sends can return ownership to the
+  ## same variable. Unlike sendMove(), this API cannot use a consuming sink
+  ## parameter: whether ownership is transferred is only known at runtime.
+  ## The channel may briefly acquire an internal lock; no capacity wait occurs.
+  if self.isNil:
+    return err(ErrorCode.InvalidState)
+
+  if self.closed:
+    return err(ErrorCode.Closed)
+
+  var owned = move data
+  var isolated = isolate(owned)
+  if self.ch.tryTake(isolated):
+    return ok(true)
+
+  data = isolated.extract()
+  return ok(false)
+
+proc trySendMove*[T](self: ThreadQueueHandle[T], data: var T): Result[bool, ErrorCode] =
+  ## Non-blocking ownership transfer via a raw queue handle.
+  ##
+  ## The owner of the underlying ThreadQueue[T] must keep it alive while
+  ## this handle is in use. Ownership semantics match the ref overload.
+  if self == nil:
+    return err(ErrorCode.InvalidState)
+
+  if self[].closed:
+    return err(ErrorCode.Closed)
+
+  var owned = move data
+  var isolated = isolate(owned)
+  if self[].ch.tryTake(isolated):
+    return ok(true)
+
+  data = isolated.extract()
+  return ok(false)
+
 template send*[T](self: ThreadQueue[T], data: untyped): Result[bool, ErrorCode] =
   ## Backward-compatible alias for sendMove().
   ##
